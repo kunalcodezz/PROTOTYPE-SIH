@@ -1,0 +1,6 @@
+{
+  "name": "OceanVision 3D",
+  "description": "Interactive 3D ocean visualization platform integrating numerical ocean model outputs and in-situ observations with AI Ocean Analyst.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
