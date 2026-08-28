@@ -1,9 +1,16 @@
 /**
  * OceanVision 3D - Interactive CesiumJS 3D Globe Component
  * High-performance geospatial scientific ocean rendering engine.
+ * 
+ * Features:
+ * - Instant canvas-based smooth temperature heatmap overlay
+ * - Native 60 FPS WebGL PointPrimitive particle flow system
+ * - In-situ observation markers (buoys, Argo floats, vessels, stations)
+ * - Anomaly detection zones
+ * - Enhanced atmospheric glow for realistic space view
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import {
@@ -14,24 +21,13 @@ import {
   LayerType,
 } from '../../types/ocean';
 import {
-  getTemperatureColor,
   getSalinityColor,
-  getCurrentSpeedColor,
   getWaveHeightColor,
   getSeaLevelColor,
 } from '../../utils/geoUtils';
-import {
-  Compass,
-  ZoomIn,
-  ZoomOut,
-  RotateCcw,
-  Layers,
-  Globe as GlobeIcon,
-  Crosshair,
-  Radio,
-  Eye,
-  EyeOff,
-} from 'lucide-react';
+import { CesiumFlowParticleSystem } from '../../utils/CesiumFlowParticleSystem';
+import { OceanHeatmapRenderer } from '../../utils/OceanHeatmapRenderer';
+import { Radio } from 'lucide-react';
 
 interface CesiumGlobeProps {
   modelPoints: OceanModelPoint[];
@@ -60,7 +56,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
-  const [cameraAltitudeKm, setCameraAltitudeKm] = useState<number>(12000);
   const [hoveredEntity, setHoveredEntity] = useState<string | null>(null);
 
   // Dedicated entity collections
@@ -70,12 +65,16 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
   const selectionEntityRef = useRef<Cesium.Entity | null>(null);
   const gridImageryLayerRef = useRef<Cesium.ImageryLayer | null>(null);
 
+  // Performance systems
+  const flowSystemRef = useRef<CesiumFlowParticleSystem | null>(null);
+  const heatmapRef = useRef<OceanHeatmapRenderer | null>(null);
+  const heatmapLayerRef = useRef<Cesium.ImageryLayer | null>(null);
+
   // Initialize Cesium Viewer
   useEffect(() => {
     if (!containerRef.current) return;
 
     try {
-      // Disable default Cesium Ion requests to avoid 401 unauthorized errors
       Cesium.Ion.defaultAccessToken = '';
 
       const viewer = new Cesium.Viewer(containerRef.current, {
@@ -91,7 +90,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         navigationHelpButton: false,
         navigationInstructionsInitiallyVisible: false,
         baseLayerPicker: false,
-        baseLayer: false, // Prevents default Cesium Ion imagery request
+        baseLayer: false,
         scene3DOnly: true,
         shouldAnimate: true,
         terrainProvider: new Cesium.EllipsoidTerrainProvider(),
@@ -99,33 +98,42 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
 
       viewerRef.current = viewer;
 
-      // Scientific dark aesthetic configuration
+      // Dark aesthetic & atmosphere
       viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
       viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a192f');
       viewer.scene.globe.enableLighting = true;
+
       if (viewer.scene.globe) {
         viewer.scene.globe.showGroundAtmosphere = layerSettings.atmosphericGlow;
       }
       if (viewer.scene.skyAtmosphere) {
         viewer.scene.skyAtmosphere.show = layerSettings.atmosphericGlow;
+        viewer.scene.skyAtmosphere.hueShift = -0.05;
+        viewer.scene.skyAtmosphere.saturationShift = 0.2;
+        viewer.scene.skyAtmosphere.brightnessShift = 0.12;
       }
 
-      // Add high-resolution base imagery provider (ESRI World Imagery / CartoDB Voyager)
+      // Add high-resolution base imagery provider (ESRI World Imagery)
       try {
         const baseImageryProvider = new Cesium.UrlTemplateImageryProvider({
           url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          credit: 'Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+          credit: 'Tiles © Esri',
           maximumLevel: 18,
         });
         const baseImagery = viewer.imageryLayers.addImageryProvider(baseImageryProvider);
-        baseImagery.alpha = 0.92;
-        baseImagery.brightness = 0.85;
-        baseImagery.contrast = 1.15;
+        baseImagery.alpha = 0.95;
+        baseImagery.brightness = 0.92;
+        baseImagery.contrast = 1.2;
+        baseImagery.saturation = 1.15;
       } catch (imageryErr) {
         console.warn('Could not attach satellite base layer:', imageryErr);
       }
 
-      // Initial Camera fly to view the Indian Ocean & Arabian Sea centerpiece
+      // Heatmap Renderer & Native WebGL Flow Particle System
+      heatmapRef.current = new OceanHeatmapRenderer();
+      flowSystemRef.current = new CesiumFlowParticleSystem(viewer);
+
+      // Initial Camera fly to view the Indian Ocean
       viewer.camera.setView({
         destination: Cesium.Cartesian3.fromDegrees(72.0, 16.0, 10500000),
         orientation: {
@@ -135,25 +143,15 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         },
       });
 
-      // Camera change listener for altitude metric
-      viewer.camera.changed.addEventListener(() => {
-        if (viewer.camera) {
-          const height = viewer.camera.positionCartographic.height / 1000;
-          setCameraAltitudeKm(Math.round(height));
-        }
-      });
-
-      // Screen space event handler for clicks and hovers
+      // Screen space event handler
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
 
-      // Handle Left Click
       handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
         const pickedObject = viewer.scene.pick(movement.position);
 
         if (Cesium.defined(pickedObject) && pickedObject.id) {
           const entity = pickedObject.id as Cesium.Entity;
           
-          // If clicked an observation marker
           if (entity.properties && entity.properties.hasProperty('observationData')) {
             const obsData = entity.properties.getValue(Cesium.JulianDate.now()).observationData as OceanObservation;
             onSelectObservation(obsData);
@@ -161,7 +159,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
             return;
           }
 
-          // If clicked an anomaly marker
           if (entity.properties && entity.properties.hasProperty('anomalyData')) {
             const anomData = entity.properties.getValue(Cesium.JulianDate.now()).anomalyData as OceanAnomaly;
             onSelectLocation(anomData.latitude, anomData.longitude);
@@ -169,7 +166,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
           }
         }
 
-        // Raycast ray to globe surface
         const ray = viewer.camera.getPickRay(movement.position);
         if (ray) {
           const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
@@ -182,7 +178,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-      // Handle Mouse Hover
       handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
         const picked = viewer.scene.pick(movement.endPosition);
         const containerEl = viewer.container as HTMLElement;
@@ -199,6 +194,14 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
 
       return () => {
         handler.destroy();
+        if (flowSystemRef.current) {
+          flowSystemRef.current.destroy();
+          flowSystemRef.current = null;
+        }
+        if (heatmapRef.current) {
+          heatmapRef.current.destroy();
+          heatmapRef.current = null;
+        }
         if (viewer && !viewer.isDestroyed()) {
           viewer.destroy();
         }
@@ -210,7 +213,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
     }
   }, []);
 
-  // Update atmosphere and grid lines when layerSettings change
+  // Update atmosphere and grid lines
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
@@ -222,7 +225,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
       viewer.scene.skyAtmosphere.show = layerSettings.atmosphericGlow;
     }
 
-    // Grid lines (Graticule)
     if (layerSettings.gridLines) {
       if (!gridImageryLayerRef.current) {
         gridImageryLayerRef.current = viewer.imageryLayers.addImageryProvider(
@@ -240,20 +242,73 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
     }
   }, [layerSettings.atmosphericGlow, layerSettings.gridLines]);
 
-  // Render Gridded Ocean Model Layer Points
+  // Update Heatmap + WebGL Flow Particles for temperature & currents
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed() || !isLoaded) return;
+    if (!heatmapRef.current || !flowSystemRef.current) return;
+
+    const isTemperatureActive = activeLayerType === 'temperature' && layerSettings.temperature;
+    const isCurrentsActive = activeLayerType === 'currents' && layerSettings.currents;
+    const showHeatmap = isTemperatureActive || isCurrentsActive;
+    const showFlow = isCurrentsActive || isTemperatureActive;
+
+    let isCancelled = false;
+
+    // 1. Update Heatmap Layer (rendered once per data change)
+    if (showHeatmap && modelPoints.length > 0) {
+      heatmapRef.current.render(modelPoints);
+
+      if (heatmapLayerRef.current) {
+        try { viewer.imageryLayers.remove(heatmapLayerRef.current, false); } catch (_) {}
+        heatmapLayerRef.current = null;
+      }
+
+      const dataUrl = heatmapRef.current.getCanvas().toDataURL('image/png');
+      Cesium.SingleTileImageryProvider.fromUrl(dataUrl, {
+        rectangle: Cesium.Rectangle.fromDegrees(-180, -90, 180, 90),
+      }).then((provider) => {
+        if (isCancelled || !viewerRef.current || viewerRef.current.isDestroyed()) return;
+        const layer = viewerRef.current.imageryLayers.addImageryProvider(provider);
+        layer.alpha = isTemperatureActive ? 0.55 : 0.38;
+        layer.brightness = 1.08;
+        layer.contrast = 1.05;
+        heatmapLayerRef.current = layer;
+      }).catch((err) => {
+        console.warn('Failed to load heatmap imagery provider:', err);
+      });
+    } else {
+      if (heatmapLayerRef.current) {
+        try { viewer.imageryLayers.remove(heatmapLayerRef.current, false); } catch (_) {}
+        heatmapLayerRef.current = null;
+      }
+    }
+
+    // 2. Update Native WebGL Particle Flow System
+    if (showFlow && modelPoints.length > 0) {
+      flowSystemRef.current.updateData(modelPoints);
+      flowSystemRef.current.show();
+    } else {
+      flowSystemRef.current.hide();
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [modelPoints, activeLayerType, layerSettings.temperature, layerSettings.currents, isLoaded]);
+
+  // Render Entity-based Ocean Model Layer Points (for salinity, waveHeight, seaLevel)
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed() || !isLoaded) return;
 
-    // Clear previous model entities
     modelEntitiesRef.current.forEach((e) => viewer.entities.remove(e));
     modelEntitiesRef.current = [];
 
-    // If ocean layers are active
+    if (activeLayerType === 'temperature' || activeLayerType === 'currents') return;
+
     const isLayerVisible =
-      (activeLayerType === 'temperature' && layerSettings.temperature) ||
       (activeLayerType === 'salinity' && layerSettings.salinity) ||
-      (activeLayerType === 'currents' && layerSettings.currents) ||
       (activeLayerType === 'waveHeight' && layerSettings.waveHeight) ||
       (activeLayerType === 'seaLevel' && layerSettings.seaLevel);
 
@@ -266,15 +321,9 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
       let radiusMeters = 180000;
       let labelText = '';
 
-      if (activeLayerType === 'temperature') {
-        colorHex = getTemperatureColor(pt.temperature);
-        labelText = `${pt.temperature}°C`;
-      } else if (activeLayerType === 'salinity') {
+      if (activeLayerType === 'salinity') {
         colorHex = getSalinityColor(pt.salinity);
         labelText = `${pt.salinity} PSU`;
-      } else if (activeLayerType === 'currents') {
-        colorHex = getCurrentSpeedColor(pt.currentSpeed);
-        labelText = `${pt.currentSpeed} m/s`;
       } else if (activeLayerType === 'waveHeight') {
         colorHex = getWaveHeightColor(pt.waveHeight);
         labelText = `${pt.waveHeight}m`;
@@ -287,7 +336,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         layerSettings.opacity * 0.75
       );
 
-      // Model Ellipse / Thermal Disc Entity
       const entity = viewer.entities.add({
         name: `Model Grid Point: ${labelText}`,
         position: Cesium.Cartesian3.fromDegrees(pt.longitude, pt.latitude, 2000),
@@ -303,29 +351,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
       });
 
       entities.push(entity);
-
-      // If active layer is ocean currents, draw directional velocity vector line
-      if (activeLayerType === 'currents' && layerSettings.currents) {
-        const arrowLengthDeg = Math.min(1.8, Math.max(0.4, pt.currentSpeed * 1.0));
-        const rad = Cesium.Math.toRadians(pt.currentDirection);
-        const endLat = pt.latitude + arrowLengthDeg * Math.cos(rad);
-        const endLon = pt.longitude + (arrowLengthDeg * Math.sin(rad)) / Math.max(0.2, Math.cos(Cesium.Math.toRadians(pt.latitude)));
-
-        const arrowEntity = viewer.entities.add({
-          name: `Current Vector: ${pt.currentSpeed} m/s @ ${pt.currentDirection}°`,
-          polyline: {
-            positions: Cesium.Cartesian3.fromDegreesArrayHeights([
-              pt.longitude, pt.latitude, 3000,
-              endLon, endLat, 3000,
-            ]),
-            width: 3.5,
-            material: new Cesium.PolylineArrowMaterialProperty(
-              Cesium.Color.fromCssColorString(colorHex).withAlpha(0.95)
-            ),
-          },
-        });
-        entities.push(arrowEntity);
-      }
     });
 
     modelEntitiesRef.current = entities;
@@ -336,48 +361,39 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed() || !isLoaded) return;
 
-    // Clear previous observation entities
     observationEntitiesRef.current.forEach((e) => viewer.entities.remove(e));
     observationEntitiesRef.current = [];
 
     const entities: Cesium.Entity[] = [];
 
     observations.forEach((obs) => {
-      // Check individual layer toggles
       if (obs.type === 'Buoy' && !layerSettings.buoys) return;
       if (obs.type === 'Argo Float' && !layerSettings.argo) return;
       if (obs.type === 'Research Vessel' && !layerSettings.vessels) return;
       if (obs.type === 'Ocean Station' && !layerSettings.stations) return;
 
       let pinColor = '#3b82f6';
-      let iconSymbol = '📍';
       let scale = 1.0;
 
       if (obs.type === 'Buoy') {
-        pinColor = '#f59e0b'; // Amber
-        iconSymbol = '⚓';
+        pinColor = '#f59e0b';
         scale = 1.1;
       } else if (obs.type === 'Argo Float') {
-        pinColor = '#06b6d4'; // Cyan
-        iconSymbol = '🌀';
+        pinColor = '#06b6d4';
         scale = 1.0;
       } else if (obs.type === 'Research Vessel') {
-        pinColor = '#10b981'; // Emerald
-        iconSymbol = '🚢';
+        pinColor = '#10b981';
         scale = 1.2;
       } else if (obs.type === 'Ocean Station') {
-        pinColor = '#8b5cf6'; // Violet
-        iconSymbol = '📡';
+        pinColor = '#8b5cf6';
         scale = 1.15;
       }
 
-      // Create SVG pin canvas for clean crisp icons on globe
       const pinCanvas = document.createElement('canvas');
       pinCanvas.width = 48;
       pinCanvas.height = 48;
       const ctx = pinCanvas.getContext('2d');
       if (ctx) {
-        // Outer pulsing ring
         ctx.beginPath();
         ctx.arc(24, 24, 20, 0, 2 * Math.PI);
         ctx.fillStyle = `${pinColor}33`;
@@ -386,7 +402,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         ctx.strokeStyle = pinColor;
         ctx.stroke();
 
-        // Inner solid core
         ctx.beginPath();
         ctx.arc(24, 24, 11, 0, 2 * Math.PI);
         ctx.fillStyle = pinColor;
@@ -481,7 +496,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
     anomalyEntitiesRef.current = entities;
   }, [anomalies, layerSettings.anomalies, isLoaded]);
 
-  // Render Selected Location Radar Ring & Beacon
+  // Render Selected Location Radar Ring
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed() || !isLoaded) return;
@@ -518,7 +533,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
     selectionEntityRef.current = entity;
   }, [selectedLocation, isLoaded]);
 
-  // Handle programmatic camera flyTo (Preset locations / search)
+  // Handle camera flyTo
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed() || !isLoaded || !flyToTarget) return;
@@ -540,43 +555,10 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
     });
   }, [flyToTarget, isLoaded]);
 
-  // Navigation handlers
-  const handleZoomIn = () => {
-    viewerRef.current?.camera.zoomIn(cameraAltitudeKm * 350);
-  };
-
-  const handleZoomOut = () => {
-    viewerRef.current?.camera.zoomOut(cameraAltitudeKm * 350);
-  };
-
-  const handleResetNorth = () => {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    const carto = viewer.camera.positionCartographic;
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height),
-      orientation: {
-        heading: 0.0,
-        pitch: Cesium.Math.toRadians(-88),
-        roll: 0.0,
-      },
-      duration: 1.2,
-    });
-  };
-
-  const handleFocusGlobal = () => {
-    viewerRef.current?.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(72.0, 16.0, 12000000),
-      duration: 1.6,
-    });
-  };
-
   return (
     <div className="relative w-full h-full bg-slate-950 overflow-hidden select-none">
-      {/* Cesium canvas mounting container */}
       <div ref={containerRef} className="w-full h-full" />
 
-      {/* Error fallback if WebGL or Cesium fails */}
       {initError && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-6 text-center">
           <div className="max-w-md bg-slate-900 border border-red-500/40 rounded-xl p-6 shadow-2xl">
@@ -593,7 +575,6 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         </div>
       )}
 
-      {/* Floating Hover Entity Tooltip */}
       {hoveredEntity && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 pointer-events-none px-4 py-2 bg-slate-950/90 border border-cyan-500/40 rounded-full shadow-lg backdrop-blur-md text-xs font-mono text-cyan-300 animate-fadeIn">
           {hoveredEntity}
