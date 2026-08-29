@@ -21,6 +21,8 @@ interface Particle {
   maxAge: number;
   speed: number;
   primitive: Cesium.PointPrimitive;
+  cartesian: Cesium.Cartesian3;
+  color: Cesium.Color;
 }
 
 function isLandApprox(lat: number, lon: number): boolean {
@@ -138,13 +140,20 @@ export class CesiumFlowParticleSystem {
     const speed = vel ? vel.speed : 0.5;
 
     let primitive: Cesium.PointPrimitive;
+    let cartesian: Cesium.Cartesian3;
+    let color: Cesium.Color;
+
     if (p && p.primitive) {
       primitive = p.primitive;
+      cartesian = p.cartesian;
+      color = p.color;
     } else {
+      cartesian = Cesium.Cartesian3.fromDegrees(lon, lat, 4000);
+      color = new Cesium.Color(0, 1, 1, 0.7);
       primitive = this.collection!.add({
-        position: Cesium.Cartesian3.fromDegrees(lon, lat, 4000),
+        position: cartesian,
         pixelSize: 3,
-        color: Cesium.Color.CYAN.withAlpha(0.7),
+        color: color,
       });
     }
 
@@ -155,6 +164,8 @@ export class CesiumFlowParticleSystem {
       maxAge,
       speed,
       primitive,
+      cartesian,
+      color,
     };
   }
 
@@ -229,8 +240,14 @@ export class CesiumFlowParticleSystem {
       const b = 1.0;
       const size = 2.5 + speedNorm * 2.5;
 
-      p.primitive.position = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 4000);
-      p.primitive.color = new Cesium.Color(r, g, b, alpha * 0.9);
+      Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 4000, Cesium.Ellipsoid.WGS84, p.cartesian);
+      p.primitive.position = p.cartesian;
+
+      p.color.red = r;
+      p.color.green = g;
+      p.color.blue = b;
+      p.color.alpha = alpha * 0.9;
+      p.primitive.color = p.color;
       p.primitive.pixelSize = size;
     }
   };

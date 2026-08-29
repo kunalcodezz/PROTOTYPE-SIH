@@ -41,7 +41,36 @@ interface CesiumGlobeProps {
   flyToTarget?: { lat: number; lon: number; zoom?: number } | null;
 }
 
-export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
+// Cache observation pin textures to avoid creating hundreds of 2D canvases
+const pinCache = new Map<string, HTMLCanvasElement>();
+function getOrCreatePinCanvas(type: string, pinColor: string): HTMLCanvasElement {
+  if (pinCache.has(type)) return pinCache.get(type)!;
+  const pinCanvas = document.createElement('canvas');
+  pinCanvas.width = 48;
+  pinCanvas.height = 48;
+  const ctx = pinCanvas.getContext('2d');
+  if (ctx) {
+    ctx.beginPath();
+    ctx.arc(24, 24, 20, 0, 2 * Math.PI);
+    ctx.fillStyle = `${pinColor}33`;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = pinColor;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(24, 24, 11, 0, 2 * Math.PI);
+    ctx.fillStyle = pinColor;
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  pinCache.set(type, pinCanvas);
+  return pinCanvas;
+}
+
+export const CesiumGlobe: React.FC<CesiumGlobeProps> = React.memo(({
   modelPoints,
   observations,
   anomalies,
@@ -57,6 +86,9 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
   const [isLoaded, setIsLoaded] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [hoveredEntity, setHoveredEntity] = useState<string | null>(null);
+  const hoveredEntityRef = useRef<string | null>(null);
+  const isDraggingRef = useRef(false);
+  const isCameraMovingRef = useRef(false);
 
   // Dedicated entity collections
   const modelEntitiesRef = useRef<Cesium.Entity[]>([]);
@@ -69,6 +101,12 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
   const flowSystemRef = useRef<CesiumFlowParticleSystem | null>(null);
   const heatmapRef = useRef<OceanHeatmapRenderer | null>(null);
   const heatmapLayerRef = useRef<Cesium.ImageryLayer | null>(null);
+
+  // Keep callback refs stable inside viewer event listener
+  const onSelectLocationRef = useRef(onSelectLocation);
+  onSelectLocationRef.current = onSelectLocation;
+  const onSelectObservationRef = useRef(onSelectObservation);
+  onSelectObservationRef.current = onSelectObservation;
 
   // Initialize Cesium Viewer
   useEffect(() => {
@@ -102,6 +140,24 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
       viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
       viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a192f');
       viewer.scene.globe.enableLighting = true;
+
+      // Screen space camera controller tuning for fluid, crisp Google Earth feel
+      const controller = viewer.scene.screenSpaceCameraController;
+      controller.inertiaSpin = 0.05;
+      controller.inertiaTranslate = 0.05;
+      controller.inertiaZoom = 0.05;
+      controller.zoomFactor = 4.0;
+      controller.maximumZoomDistance = 40000000;
+      controller.minimumZoomDistance = 10000;
+      controller.enableCollisionDetection = true;
+
+      // Render fidelity & tile streaming optimizations
+      viewer.resolutionScale = Math.min(window.devicePixelRatio || 1, 1.5);
+      viewer.scene.globe.maximumScreenSpaceError = 2.0;
+      viewer.scene.globe.tileCacheSize = 250;
+      viewer.scene.globe.preloadAncestors = true;
+      viewer.scene.globe.preloadSiblings = true;
+      viewer.scene.globe.loadingDescendantLimit = 20;
 
       if (viewer.scene.globe) {
         viewer.scene.globe.showGroundAtmosphere = layerSettings.atmosphericGlow;
@@ -143,8 +199,51 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         },
       });
 
+      // Camera movement tracking to avoid picking during rotation/zoom
+      const onCameraMoveStart = () => {
+        isCameraMovingRef.current = true;
+      };
+      const onCameraMoveEnd = () => {
+        isCameraMovingRef.current = false;
+      };
+      viewer.camera.moveStart.addEventListener(onCameraMoveStart);
+      viewer.camera.moveEnd.addEventListener(onCameraMoveEnd);
+
       // Screen space event handler
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+
+      // Track drag interactions to prevent expensive GPU picks while rotating/panning
+      handler.setInputAction(() => {
+        isDraggingRef.current = true;
+      }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = false;
+      }, Cesium.ScreenSpaceEventType.LEFT_UP);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = true;
+      }, Cesium.ScreenSpaceEventType.RIGHT_DOWN);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = false;
+      }, Cesium.ScreenSpaceEventType.RIGHT_UP);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = true;
+      }, Cesium.ScreenSpaceEventType.MIDDLE_DOWN);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = false;
+      }, Cesium.ScreenSpaceEventType.MIDDLE_UP);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = true;
+      }, Cesium.ScreenSpaceEventType.PINCH_START);
+
+      handler.setInputAction(() => {
+        isDraggingRef.current = false;
+      }, Cesium.ScreenSpaceEventType.PINCH_END);
 
       handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
         const pickedObject = viewer.scene.pick(movement.position);
@@ -154,14 +253,14 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
           
           if (entity.properties && entity.properties.hasProperty('observationData')) {
             const obsData = entity.properties.getValue(Cesium.JulianDate.now()).observationData as OceanObservation;
-            onSelectObservation(obsData);
-            onSelectLocation(obsData.latitude, obsData.longitude);
+            onSelectObservationRef.current(obsData);
+            onSelectLocationRef.current(obsData.latitude, obsData.longitude);
             return;
           }
 
           if (entity.properties && entity.properties.hasProperty('anomalyData')) {
             const anomData = entity.properties.getValue(Cesium.JulianDate.now()).anomalyData as OceanAnomaly;
-            onSelectLocation(anomData.latitude, anomData.longitude);
+            onSelectLocationRef.current(anomData.latitude, anomData.longitude);
             return;
           }
         }
@@ -173,26 +272,65 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
             const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
             const lat = Cesium.Math.toDegrees(cartographic.latitude);
             const lon = Cesium.Math.toDegrees(cartographic.longitude);
-            onSelectLocation(lat, lon);
+            onSelectLocationRef.current(lat, lon);
           }
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-      handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
-        const picked = viewer.scene.pick(movement.endPosition);
+      let lastPickTime = 0;
+      let pendingPickTimeout: any = null;
+
+      const performPick = (endPos: Cesium.Cartesian2) => {
+        if (!viewer || viewer.isDestroyed()) return;
+        if (isDraggingRef.current || isCameraMovingRef.current) return;
+
+        const picked = viewer.scene.pick(endPos);
         const containerEl = viewer.container as HTMLElement;
-        if (Cesium.defined(picked) && picked.id && picked.id.name) {
-          setHoveredEntity(picked.id.name);
-          if (containerEl?.style) containerEl.style.cursor = 'pointer';
-        } else {
-          setHoveredEntity(null);
-          if (containerEl?.style) containerEl.style.cursor = 'default';
+        const newName = Cesium.defined(picked) && picked.id && picked.id.name ? picked.id.name : null;
+
+        if (newName !== hoveredEntityRef.current) {
+          hoveredEntityRef.current = newName;
+          setHoveredEntity(newName);
+          if (containerEl?.style) {
+            containerEl.style.cursor = newName ? 'pointer' : 'default';
+          }
         }
+      };
+
+      handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
+        if (isDraggingRef.current || isCameraMovingRef.current) {
+          if (hoveredEntityRef.current !== null) {
+            hoveredEntityRef.current = null;
+            setHoveredEntity(null);
+            const containerEl = viewer.container as HTMLElement;
+            if (containerEl?.style) containerEl.style.cursor = 'default';
+          }
+          return;
+        }
+
+        const now = performance.now();
+        if (now - lastPickTime < 60) {
+          if (!pendingPickTimeout) {
+            pendingPickTimeout = setTimeout(() => {
+              pendingPickTimeout = null;
+              if (!isDraggingRef.current && !isCameraMovingRef.current) {
+                performPick(movement.endPosition);
+              }
+            }, 60);
+          }
+          return;
+        }
+
+        lastPickTime = now;
+        performPick(movement.endPosition);
       }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
       setIsLoaded(true);
 
       return () => {
+        viewer.camera.moveStart.removeEventListener(onCameraMoveStart);
+        viewer.camera.moveEnd.removeEventListener(onCameraMoveEnd);
+        if (pendingPickTimeout) clearTimeout(pendingPickTimeout);
         handler.destroy();
         if (flowSystemRef.current) {
           flowSystemRef.current.destroy();
@@ -347,6 +485,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
           outlineColor: Cesium.Color.fromCssColorString(colorHex).withAlpha(0.9),
           outlineWidth: 1.5,
           height: 1000,
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 25000000),
         },
       });
 
@@ -389,27 +528,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
         scale = 1.15;
       }
 
-      const pinCanvas = document.createElement('canvas');
-      pinCanvas.width = 48;
-      pinCanvas.height = 48;
-      const ctx = pinCanvas.getContext('2d');
-      if (ctx) {
-        ctx.beginPath();
-        ctx.arc(24, 24, 20, 0, 2 * Math.PI);
-        ctx.fillStyle = `${pinColor}33`;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = pinColor;
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.arc(24, 24, 11, 0, 2 * Math.PI);
-        ctx.fillStyle = pinColor;
-        ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+      const pinCanvas = getOrCreatePinCanvas(obs.type, pinColor);
 
       const entity = viewer.entities.add({
         name: `${obs.type}: ${obs.name} (${obs.stationId})`,
@@ -420,6 +539,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
           horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
           scale: scale,
           heightReference: Cesium.HeightReference.NONE,
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 25000000),
         },
         label: layerSettings.labels
           ? {
@@ -474,6 +594,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
           outlineColor: Cesium.Color.fromCssColorString(glowColor),
           outlineWidth: 2.5,
           height: 8000,
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 30000000),
         },
         label: {
           text: `⚠️ ${anom.parameter} Anomaly: ${anom.difference > 0 ? '+' : ''}${anom.difference} ${anom.unit}`,
@@ -484,6 +605,7 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
           outlineWidth: 3,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
           pixelOffset: new Cesium.Cartesian2(0, -28),
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 20000000),
         },
         properties: new Cesium.PropertyBag({
           anomalyData: anom,
@@ -582,4 +704,4 @@ export const CesiumGlobe: React.FC<CesiumGlobeProps> = ({
       )}
     </div>
   );
-};
+});

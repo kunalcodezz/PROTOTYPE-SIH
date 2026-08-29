@@ -107,29 +107,32 @@ export default function App() {
   }, [selectedCoordinates, timeIndex]);
 
   // Coordinate click
-  const handleSelectLocation = (lat: number, lon: number) => {
+  const handleSelectLocation = useCallback((lat: number, lon: number) => {
     setSelectedCoordinates({ lat, lon });
-    const nearest = observations.find(
-      (o) => Math.abs(o.latitude - lat) < 1.5 && Math.abs(o.longitude - lon) < 1.5
-    );
-    setSelectedObservation(nearest || null);
-  };
+    setObservations((currentObs) => {
+      const nearest = currentObs.find(
+        (o) => Math.abs(o.latitude - lat) < 1.5 && Math.abs(o.longitude - lon) < 1.5
+      );
+      setSelectedObservation(nearest || null);
+      return currentObs;
+    });
+  }, []);
 
   // Observation click
-  const handleSelectObservation = (obs: OceanObservation) => {
+  const handleSelectObservation = useCallback((obs: OceanObservation) => {
     setSelectedObservation(obs);
     setSelectedCoordinates({ lat: obs.latitude, lon: obs.longitude });
-  };
+  }, []);
 
   // Target navigation from search
-  const handleNavigateToTarget = (target: { lat: number; lon: number; zoom?: number; name?: string }) => {
+  const handleNavigateToTarget = useCallback((target: { lat: number; lon: number; zoom?: number; name?: string }) => {
     setFlyToTarget({
       lat: target.lat,
       lon: target.lon,
       zoom: target.zoom || 4500000,
     });
     setSelectedCoordinates({ lat: target.lat, lon: target.lon });
-  };
+  }, []);
 
   const currentTimestampObj = TIMESTAMPS[timeIndex] || TIMESTAMPS[2];
 
