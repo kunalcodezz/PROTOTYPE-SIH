@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { GoogleGenAI } from '@google/genai';
@@ -167,7 +168,7 @@ Instructions:
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, strictPort: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -179,9 +180,22 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`OceanVision 3D server running on http://0.0.0.0:${PORT}`);
+  });
+
+  // Handle port-in-use errors gracefully instead of crashing
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ Port ${PORT} is already in use.`);
+      console.error(`   Kill the existing process or set a different PORT env variable.`);
+      console.error(`   PowerShell: Stop-Process -Name node -Force`);
+      console.error(`   Git Bash:   taskkill //F //IM node.exe\n`);
+      process.exit(1);
+    }
+    throw err;
   });
 }
 
 startServer();
+

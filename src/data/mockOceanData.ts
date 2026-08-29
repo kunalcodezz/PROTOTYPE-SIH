@@ -14,6 +14,7 @@ import {
   ComparisonMetric,
   AnomalySeverity
 } from '../types/ocean';
+import { OceanLandMask } from '../utils/OceanLandMask';
 
 export const TIMESTAMPS: { id: string; label: string; iso: string; formatted: string }[] = [
   { id: 't0', label: '25 Aug', iso: '2026-08-25T00:00:00Z', formatted: '25 Aug 2026, 00:00 UTC' },
@@ -632,26 +633,7 @@ export function generateGriddedModelPoints(timeIndex: number = 2): OceanModelPoi
  * Fast approximate land mask to avoid rendering ocean layers inside landmasses.
  */
 function isLandApproximate(lat: number, lon: number): boolean {
-  // Africa
-  if (lat >= -32 && lat <= 35 && lon >= 10 && lon <= 45) return true;
-  if (lat >= 15 && lat <= 33 && lon >= 30 && lon <= 55) return true;
-  // Eurasia / India
-  if (lat >= 8 && lat <= 35 && lon >= 74 && lon <= 88) {
-    if (lat >= 20 && lon >= 74 && lon <= 88) return true; // Central/North India
-    if (lat >= 12 && lat <= 20 && lon >= 75 && lon <= 82) return true; // South India peninsula
-  }
-  if (lat >= 30 && lat <= 70 && lon >= 40 && lon <= 130) return true; // Russia/China
-  if (lat >= 36 && lat <= 60 && lon >= -8 && lon <= 35) return true; // Europe
-  // North America
-  if (lat >= 25 && lat <= 65 && lon >= -125 && lon <= -75) return true;
-  // South America
-  if (lat >= -50 && lat <= 10 && lon >= -75 && lon <= -40) return true;
-  // Australia
-  if (lat >= -38 && lat <= -15 && lon >= 115 && lon <= 150) return true;
-  // Antarctica
-  if (lat < -72) return true;
-
-  return false;
+  return OceanLandMask.isLand(lat, lon);
 }
 
 /**

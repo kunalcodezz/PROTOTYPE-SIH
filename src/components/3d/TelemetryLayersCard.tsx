@@ -1,11 +1,11 @@
 /**
  * OceanVision 3D - Telemetry Layers Floating Panel
- * Matches the reference design with interactive layer selectors and AI Analyst trigger.
+ * Matches the reference design with interactive layer selectors for Temperature, Waves, Currents, Salinity, and AI Analyst.
  */
 
 import React, { useState } from 'react';
 import { LayerType } from '../../types/ocean';
-import { Thermometer, Waves, Droplets, Sparkles, ChevronUp, ChevronDown, Layers } from 'lucide-react';
+import { Thermometer, Waves, Droplets, Sparkles, ChevronUp, ChevronDown, Layers, Activity } from 'lucide-react';
 
 interface TelemetryLayersCardProps {
   activeLayer: LayerType;
@@ -57,7 +57,7 @@ export const TelemetryLayersCard: React.FC<TelemetryLayersCardProps> = ({
       {/* Layer Options List (Hidden when minimized) */}
       {!isMinimized && (
         <div className="space-y-2 animate-fadeIn">
-          {/* 1. Global Heatmap */}
+          {/* 1. Temperature / Global Heatmap */}
           <button
             id="btn-layer-heatmap"
             onClick={() => onSelectLayer('temperature')}
@@ -73,14 +73,37 @@ export const TelemetryLayersCard: React.FC<TelemetryLayersCardProps> = ({
                   activeLayer === 'temperature' ? 'text-cyan-400' : 'text-slate-400'
                 }`}
               />
-              <span>Global Heatmap</span>
+              <span>Temperature & SST</span>
             </div>
             {activeLayer === 'temperature' && (
               <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-sm shadow-cyan-400/80" />
             )}
           </button>
 
-          {/* 2. Current Flows */}
+          {/* 2. Wave Dynamics (Waves) */}
+          <button
+            id="btn-layer-waves"
+            onClick={() => onSelectLayer('waveHeight')}
+            className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-medium transition-all duration-200 ${
+              activeLayer === 'waveHeight'
+                ? 'bg-cyan-950/80 border border-cyan-500/50 text-cyan-300 shadow-lg shadow-cyan-950/50'
+                : 'bg-slate-900/50 border border-slate-800/60 hover:bg-slate-900 hover:border-slate-700 text-slate-300'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <Activity
+                className={`w-4 h-4 ${
+                  activeLayer === 'waveHeight' ? 'text-cyan-400' : 'text-slate-400'
+                }`}
+              />
+              <span>Wave Dynamics & Swell</span>
+            </div>
+            {activeLayer === 'waveHeight' && (
+              <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-sm shadow-cyan-400/80" />
+            )}
+          </button>
+
+          {/* 3. Current Flows */}
           <button
             id="btn-layer-currents"
             onClick={() => onSelectLayer('currents')}
@@ -103,7 +126,7 @@ export const TelemetryLayersCard: React.FC<TelemetryLayersCardProps> = ({
             )}
           </button>
 
-          {/* 3. Salinity Levels */}
+          {/* 4. Salinity Levels */}
           <button
             id="btn-layer-salinity"
             onClick={() => onSelectLayer('salinity')}
@@ -126,7 +149,7 @@ export const TelemetryLayersCard: React.FC<TelemetryLayersCardProps> = ({
             )}
           </button>
 
-          {/* 4. AI Analyst */}
+          {/* 5. AI Analyst */}
           <button
             id="btn-layer-ai-analyst"
             onClick={onToggleAi}

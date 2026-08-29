@@ -5,19 +5,24 @@
 import { LayerType } from '../types/ocean';
 
 /**
- * Maps Temperature in °C (0°C to 32°C) to scientific colormap hex string (Viridis / Turbo / Ocean Thermal)
+ * Maps Temperature in °C (18°C to 34°C) to continuous scientific colormap hex string:
+ * 18°C (#0047FF) -> 20°C (#006BFF) -> 22°C (#00BFFF) -> 24°C (#00E5A8) ->
+ * 26°C (#7CFF00) -> 28°C (#FFD600) -> 30°C (#FF9D00) -> 32°C (#FF4D00) -> 34°C+ (#F00000)
  */
 export function getTemperatureColor(temp: number): string {
-  // Normalize between 0 and 32
-  const t = Math.min(32, Math.max(0, temp)) / 32;
+  // Normalize between 18 and 34
+  const t = Math.min(34, Math.max(18, temp));
+  const norm = (t - 18) / 16;
 
-  if (t < 0.2) return '#003366'; // Deep polar blue
-  if (t < 0.35) return '#0077be'; // Cold ocean cyan
-  if (t < 0.5) return '#00b4d8'; // Temperate cyan
-  if (t < 0.65) return '#52b788'; // Mild green-cyan
-  if (t < 0.78) return '#f4a261'; // Subtropical amber
-  if (t < 0.9) return '#e76f51'; // Warm orange
-  return '#d62828'; // Tropical deep red
+  if (norm <= 0.0) return '#0047FF';
+  if (norm <= 0.125) return '#006BFF';
+  if (norm <= 0.250) return '#00BFFF';
+  if (norm <= 0.375) return '#00E5A8';
+  if (norm <= 0.500) return '#7CFF00';
+  if (norm <= 0.625) return '#FFD600';
+  if (norm <= 0.750) return '#FF9D00';
+  if (norm <= 0.875) return '#FF4D00';
+  return '#F00000';
 }
 
 /**
@@ -73,9 +78,9 @@ export function getLayerConfig(layer: LayerType): { name: string; unit: string; 
       return {
         name: 'Sea Surface Temperature',
         unit: '°C',
-        min: '0°C',
-        max: '32°C',
-        colors: ['#003366', '#0077be', '#00b4d8', '#52b788', '#f4a261', '#e76f51', '#d62828'],
+        min: '18°C',
+        max: '34°C',
+        colors: ['#0047FF', '#006BFF', '#00BFFF', '#00E5A8', '#7CFF00', '#FFD600', '#FF9D00', '#FF4D00', '#F00000'],
       };
     case 'salinity':
       return {

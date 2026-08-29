@@ -1,16 +1,12 @@
 /**
  * OceanVision 3D — Ocean Current Streamline Particle System
  * 
- * Renders animated flowing particles across the ocean surface that follow
- * a velocity field derived from OceanModelPoint[] data. The particles are
- * rendered as fading trails on an offscreen canvas that gets projected onto
- * the Cesium globe as a SingleTileImageryProvider layer.
- * 
- * Visual style: bright cyan/white streamlines on transparent background,
- * matching NASA/NOAA ocean current visualisation aesthetics.
+ * Renders animated flowing particles across the ocean surface strictly
+ * constrained to ocean waters using OceanLandMask.
  */
 
 import { OceanModelPoint } from '../types/ocean';
+import { OceanLandMask } from './OceanLandMask';
 
 interface Particle {
   x: number;     // canvas x (0..width)
@@ -24,31 +20,6 @@ interface VelocityCell {
   u: number;  // east-west component (positive = east)
   v: number;  // north-south component (positive = north)
   speed: number;
-}
-
-// Simple approximate land mask for filtering particle spawns
-function isLandApprox(lat: number, lon: number): boolean {
-  // Africa
-  if (lat >= -32 && lat <= 35 && lon >= 10 && lon <= 45) return true;
-  if (lat >= 15 && lat <= 33 && lon >= 30 && lon <= 55) return true;
-  // India
-  if (lat >= 8 && lat <= 35 && lon >= 74 && lon <= 88) {
-    if (lat >= 20 && lon >= 74 && lon <= 88) return true;
-    if (lat >= 12 && lat <= 20 && lon >= 75 && lon <= 82) return true;
-  }
-  // Russia/China
-  if (lat >= 30 && lat <= 70 && lon >= 40 && lon <= 130) return true;
-  // Europe
-  if (lat >= 36 && lat <= 60 && lon >= -8 && lon <= 35) return true;
-  // North America
-  if (lat >= 25 && lat <= 65 && lon >= -125 && lon <= -75) return true;
-  // South America
-  if (lat >= -50 && lat <= 10 && lon >= -75 && lon <= -40) return true;
-  // Australia
-  if (lat >= -38 && lat <= -15 && lon >= 115 && lon <= 150) return true;
-  // Antarctica
-  if (lat < -72) return true;
-  return false;
 }
 
 export class OceanCurrentStreamlines {
@@ -66,31 +37,28 @@ export class OceanCurrentStreamlines {
   private readonly H = 1024;
 
   // Velocity field grid resolution in degrees
-  private readonly GRID_RES = 3; // degrees per cell
+  private readonly GRID_RES = 2.5; // degrees per cell
   private readonly GRID_COLS: number;
   private readonly GRID_ROWS: number;
 
   // Particle config
-  private readonly PARTICLE_COUNT = 4500;
+  private readonly PARTICLE_COUNT = 2000; // Performance: reduced from 4000
   private readonly MIN_AGE = 25;
-  private readonly MAX_AGE = 80;
+  private readonly MAX_AGE = 75;
   private readonly TRAIL_FADE = 0.92; // trail persistence (0..1)
-  private readonly SPEED_SCALE = 38;  // pixels per m/s per frame
+  private readonly SPEED_SCALE = 36;  // pixels per m/s per frame
 
-  // Callback to notify Cesium the texture has updated
   private onFrameUpdate: (() => void) | null = null;
 
   constructor() {
     this.GRID_COLS = Math.ceil(360 / this.GRID_RES);
     this.GRID_ROWS = Math.ceil(180 / this.GRID_RES);
 
-    // Main compositing canvas
     this.canvas = document.createElement('canvas');
     this.canvas.width = this.W;
     this.canvas.height = this.H;
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: false })!;
 
-    // Trail accumulation canvas (fades over time)
     this.trailCanvas = document.createElement('canvas');
     this.trailCanvas.width = this.W;
     this.trailCanvas.height = this.H;
@@ -98,7 +66,6 @@ export class OceanCurrentStreamlines {
     this.trailCtx.fillStyle = 'rgba(0,0,0,0)';
     this.trailCtx.fillRect(0, 0, this.W, this.H);
 
-    // Init empty velocity field
     for (let r = 0; r < this.GRID_ROWS; r++) {
       this.velocityField[r] = [];
       for (let c = 0; c < this.GRID_COLS; c++) {
@@ -107,19 +74,15 @@ export class OceanCurrentStreamlines {
     }
   }
 
-  /** Get the canvas element to use as an imagery source */
   getCanvas(): HTMLCanvasElement {
     return this.canvas;
   }
 
-  /** Set callback when frame updates (to trigger Cesium layer refresh) */
   setOnFrameUpdate(cb: () => void) {
     this.onFrameUpdate = cb;
   }
 
-  /** Build velocity field from model points */
   updateVelocityField(modelPoints: OceanModelPoint[]) {
-    // Reset field
     for (let r = 0; r < this.GRID_ROWS; r++) {
       for (let c = 0; c < this.GRID_COLS; c++) {
         this.velocityField[r][c] = null;
@@ -138,13 +101,11 @@ export class OceanCurrentStreamlines {
       this.velocityField[row][col] = { u, v, speed: pt.currentSpeed };
     }
 
-    // Fill gaps via basic nearest-neighbor interpolation for denser coverage
     this._fillGaps();
   }
 
-  /** Simple gap-filling: spread known cells to empty neighbors (2 passes) */
   private _fillGaps() {
-    for (let pass = 0; pass < 3; pass++) {
+    for (let pass = 0; pass < 2; pass++) {
       const copy = this.velocityField.map((row) => [...row]);
       for (let r = 1; r < this.GRID_ROWS - 1; r++) {
         for (let c = 0; c < this.GRID_COLS; c++) {
@@ -167,14 +128,11 @@ export class OceanCurrentStreamlines {
     }
   }
 
-  /** Look up interpolated velocity at a canvas pixel position */
   private _getVelocity(x: number, y: number): VelocityCell | null {
-    // Canvas coords to lat/lon
     const lon = (x / this.W) * 360 - 180;
     const lat = 90 - (y / this.H) * 180;
 
-    // Skip land
-    if (isLandApprox(lat, lon)) return null;
+    if (OceanLandMask.isLand(lat, lon)) return null;
 
     const col = (x / this.W) * this.GRID_COLS;
     const row = (y / this.H) * this.GRID_ROWS;
@@ -192,7 +150,6 @@ export class OceanCurrentStreamlines {
     const v01 = this.velocityField[r1]?.[c0];
     const v11 = this.velocityField[r1]?.[c1];
 
-    // Bilinear interpolation — need at least one corner defined
     let uSum = 0, vSum = 0, spdSum = 0, wSum = 0;
     const corners: [VelocityCell | null | undefined, number][] = [
       [v00, (1 - fx) * (1 - fy)],
@@ -212,25 +169,23 @@ export class OceanCurrentStreamlines {
     return { u: uSum / wSum, v: vSum / wSum, speed: spdSum / wSum };
   }
 
-  /** Spawn a particle at a random ocean location */
   private _spawnParticle(): Particle {
     let x: number, y: number, attempts = 0;
     do {
       x = Math.random() * this.W;
       y = Math.random() * this.H;
       attempts++;
-    } while (this._getVelocity(x, y) === null && attempts < 30);
+    } while (this._getVelocity(x, y) === null && attempts < 35);
 
     return {
       x,
       y,
-      age: Math.floor(Math.random() * this.MIN_AGE), // stagger ages
+      age: Math.floor(Math.random() * this.MIN_AGE),
       maxAge: this.MIN_AGE + Math.floor(Math.random() * (this.MAX_AGE - this.MIN_AGE)),
       speed: 0,
     };
   }
 
-  /** Initialize all particles */
   private _initParticles() {
     this.particles = [];
     for (let i = 0; i < this.PARTICLE_COUNT; i++) {
@@ -238,17 +193,14 @@ export class OceanCurrentStreamlines {
     }
   }
 
-  /** Single animation frame */
   private _tick = () => {
     if (!this.isRunning) return;
 
-    // Fade trail canvas
     this.trailCtx.globalCompositeOperation = 'destination-in';
     this.trailCtx.fillStyle = `rgba(0, 0, 0, ${this.TRAIL_FADE})`;
     this.trailCtx.fillRect(0, 0, this.W, this.H);
     this.trailCtx.globalCompositeOperation = 'source-over';
 
-    // Move & draw particles
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
 
@@ -264,28 +216,31 @@ export class OceanCurrentStreamlines {
       }
 
       p.speed = vel.speed;
-
       const oldX = p.x;
       const oldY = p.y;
 
-      // Move particle: u -> x (east positive), v -> y (north positive, but canvas y is inverted)
       p.x += vel.u * this.SPEED_SCALE;
-      p.y -= vel.v * this.SPEED_SCALE; // inverted y
+      p.y -= vel.v * this.SPEED_SCALE;
 
-      // Wrap x around
       if (p.x >= this.W) p.x -= this.W;
       if (p.x < 0) p.x += this.W;
 
+      // Check if moved into land
+      const lat = 90 - (p.y / this.H) * 180;
+      const lon = (p.x / this.W) * 360 - 180;
+      if (OceanLandMask.isLand(lat, lon)) {
+        this.particles[i] = this._spawnParticle();
+        continue;
+      }
+
       p.age++;
 
-      // Alpha based on age (fade in and fade out)
       const ageRatio = p.age / p.maxAge;
       let alpha = 1.0;
       if (ageRatio < 0.1) alpha = ageRatio / 0.1;
       else if (ageRatio > 0.8) alpha = (1.0 - ageRatio) / 0.2;
       alpha = Math.max(0.05, Math.min(1.0, alpha));
 
-      // Color based on speed: slow = deep blue, medium = cyan, fast = white
       const speedNorm = Math.min(1.0, vel.speed / 1.8);
       const r = Math.floor(80 + speedNorm * 175);
       const g = Math.floor(200 + speedNorm * 55);
@@ -299,26 +254,19 @@ export class OceanCurrentStreamlines {
       this.trailCtx.lineWidth = lineWidth;
       this.trailCtx.lineCap = 'round';
       this.trailCtx.stroke();
-
-      // Draw particle head glow
-      if (alpha > 0.3 && speedNorm > 0.15) {
-        this.trailCtx.beginPath();
-        this.trailCtx.arc(p.x, p.y, 1.2 + speedNorm, 0, Math.PI * 2);
-        this.trailCtx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.6})`;
-        this.trailCtx.fill();
-      }
     }
 
-    // Composite: clear main canvas, draw trail
     this.ctx.clearRect(0, 0, this.W, this.H);
     this.ctx.drawImage(this.trailCanvas, 0, 0);
+
+    // Apply land mask to guarantee no stray streamline on land
+    OceanLandMask.applyMaskToContext(this.ctx, this.W, this.H);
 
     if (this.onFrameUpdate) this.onFrameUpdate();
 
     this.animFrameId = requestAnimationFrame(this._tick);
   };
 
-  /** Start the particle animation */
   start() {
     if (this.isRunning) return;
     this.isRunning = true;
@@ -326,7 +274,6 @@ export class OceanCurrentStreamlines {
     this._tick();
   }
 
-  /** Stop the animation */
   stop() {
     this.isRunning = false;
     if (this.animFrameId !== null) {
@@ -335,14 +282,12 @@ export class OceanCurrentStreamlines {
     }
   }
 
-  /** Clear the canvas */
   clear() {
     this.stop();
     this.ctx.clearRect(0, 0, this.W, this.H);
     this.trailCtx.clearRect(0, 0, this.W, this.H);
   }
 
-  /** Destroy and release resources */
   destroy() {
     this.clear();
     this.particles = [];
